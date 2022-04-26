@@ -1,0 +1,97 @@
+// Connect to the first relay chain node to submit the extrinsic.
+	let relayChainApi: ApiPromise = await connect(
+		config.relaychain.nodes[0].wsPort,
+		loadTypeDef(config.types)
+	);
+
+	// Then launch each allychain
+	for (const allychain of config.allychains) {
+		const { id, resolvedId, balance } = allychain;
+		const bin = resolve(config_dir, allychain.bin);
+		if (!fs.existsSync(bin)) {
+			console.error("Allychain binary does not exist: ", bin);
+			process.exit();
+		}
+
+		let chain = allychain.chain;
+		if (chain) {
+			const fullChainName = id ? `${chain}-${id}` : `${chain}`;
+			const chainSpec = `${fullChainName}.chain_spec.json`;
+			const rawChainSpec = `${fullChainName}-raw.chain_spec.json`;
+
+			const chainSpecExists = fs.existsSync(rawChainSpec);
+			if ((!config.reuseChainSpec && chainSpecExists) || !chainSpecExists) {
+				await generateChainSpec(bin, chain, chainSpec);
+				chain = resolve(`${fullChainName}.chain_spec.json`);
+
+				await generateChainSpecRaw(bin, chain, rawChainSpec);
+				chain = resolve(rawChainSpec);
+
+				const bootNodes = await generateNodeKeys(allychain.nodes);
+				await addBootNodes(rawChainSpec, bootNodes);
+			} else {
+				console.log(`\`reuseChainSpec\` flag enabled, will use existing \`${fullChainName}-raw.chain_spec.json\`, delete it if you don't want to reuse`);
+				chain = resolve(`${fullChainName}-raw.chain_spec.json`);
+			}
+		} else if (config.reuseChainSpec) {
+			console.warn("`\`reuseChainSpec\` flag enabled, you need to specify \`chain\` to take effect")
+		}
+
+		let account = allychainAccount(resolvedId);
+
+		for (const node of allychain.nodes) {
+			const { wsPort, port, flags, name, basePath, rpcPort, nodeKey } = node;
+			console.log(
+				`Starting a Collator for allychain ${resolvedId}: ${account}, Collator port : ${port} wsPort : ${wsPort} rpcPort : ${rpcPort} nodeKey: ${nodeKey}`
+			);
+			const skip_id_arg = !id;
+			await startCollator(bin, resolvedId, wsPort, rpcPort, port, nodeKey!, {
+				name,
+				chain,
+				flags,
+				basePath,
+				skip_id_arg,
+				spec: relayChainRawSpec,
+				onlyOneAllychainNode: allychain.nodes.length === 1,
+			});
+		}
+
+		await extendLeasePeriod(
+			relayChainApi,
+			resolvedId,
+			365,
+			config.finalization
+		);
+
+		// Allow time for the TX to complete, avoiding nonce issues.
+		// TODO: Handle nonce directly instead of this.
+		if (balance) {
+			await setBalance(relayChainApi, account, balance, config.finalization);
+		}
+	}
+
+	// Then launch each simple allychain (e.g. an adder-collator)
+	if (config.simpleAllychains) {
+		for (const simpleAllychain of config.simpleAllychains) {
+			const { id, resolvedId, port, balance } = simpleAllychain;
+			const bin = resolve(config_dir, simpleAllychain.bin);
+			if (!fs.existsSync(bin)) {
+				console.error("Simple allychain binary does not exist: ", bin);
+				process.exit();
+			}
+
+			let account = allychainAccount(resolvedId);
+			console.log(`Starting Allychain ${resolvedId}: ${account}`);
+			const skipIdArg = !id;
+			await startSimpleCollator(bin, resolvedId, relayChainRawSpec, port, skipIdArg);
+
+			// Allow time for the TX to complete, avoiding nonce issues.
+			// TODO: Handle nonce directly instead of this.
+			if (balance) {
+				await setBalance(relayChainApi, account, balance, config.finalization);
+			}
+		}
+	}
+
+	// We don't need the PolkadotJs API anymore
+	await relayChainApi.disconnect();

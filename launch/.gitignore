@@ -1,0 +1,14 @@
+dist
+node_modules
+*.wasm
+*.log
+rococo-local.json
+rococo-local-raw.json
+configLocal.json
+bin
+*chain_spec.json
+data
+canary.relay.json
+canary.relay.raw.json
+canary.ally.json
+canary.ally.raw.json
